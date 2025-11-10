@@ -45,6 +45,69 @@ func TestIsBootable_False(t *testing.T) {
 	}
 }
 
+func TestIsValidMAC(t *testing.T) {
+	tests := []struct {
+		name string
+		mac  string
+		want bool
+	}{
+		{
+			name: "Valid MAC with colons",
+			mac:  "00:40:a6:88:d9:01",
+			want: true,
+		},
+		{
+			name: "Valid MAC with dashes",
+			mac:  "00-40-a6-88-d9-01",
+			want: true,
+		},
+		{
+			name: "Valid MAC uppercase",
+			mac:  "AA:BB:CC:DD:EE:FF",
+			want: true,
+		},
+		{
+			name: "Valid MAC lowercase",
+			mac:  "aa:bb:cc:dd:ee:ff",
+			want: true,
+		},
+		{
+			name: "Invalid MAC - Not Available",
+			mac:  "Not Available",
+			want: false,
+		},
+		{
+			name: "Invalid MAC - empty string",
+			mac:  "",
+			want: false,
+		},
+		{
+			name: "Invalid MAC - wrong format",
+			mac:  "00:40:a6:88:d9",
+			want: false,
+		},
+		{
+			name: "Invalid MAC - invalid characters",
+			mac:  "00:40:a6:88:d9:zz",
+			want: false,
+		},
+		{
+			name: "Invalid MAC - too long",
+			mac:  "00:40:a6:88:d9:01:02",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isValidMAC(tt.mac)
+			if got != tt.want {
+				t.Errorf("isValidMAC(%q) = %v, want %v", tt.mac, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClientURLs(t *testing.T) {
 	host := "example.com"
 	user := "admin"
@@ -246,6 +309,114 @@ func TestDiscoverBootableMACs(t *testing.T) {
 		"/redfish/v1/Systems/Self/EthernetInterfaces",
 		"/redfish/v1/Systems/Self/EthernetInterfaces/1",
 		"/redfish/v1/Systems/Self/EthernetInterfaces/2",
+	}
+	if len(gotPaths) != len(expectedPaths) {
+		t.Errorf("got %d requests, want %d", len(gotPaths), len(expectedPaths))
+	}
+	for i, want := range expectedPaths {
+		if i >= len(gotPaths) {
+			t.Errorf("missing request %d: want %q", i, want)
+			continue
+		}
+		if gotPaths[i] != want {
+			t.Errorf("request %d: got path %q, want %q", i, gotPaths[i], want)
+		}
+	}
+}
+
+func TestDiscoverBootableMACs_WithInvalidMACs(t *testing.T) {
+	var gotPaths []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		// Simulate HPE Cray system with "Not Available" MACs
+		switch r.URL.Path {
+		case "/redfish/v1/Systems":
+			w.Write([]byte(`{"Members":[{"@odata.id":"/redfish/v1/Systems/Node0"}]}`)) //nolint:errcheck
+		case "/redfish/v1/Systems/Node0/EthernetInterfaces":
+			_, _ = w.Write([]byte(`{
+				"Members":[
+					{"@odata.id":"/redfish/v1/Systems/Node0/EthernetInterfaces/HPCNet2"},
+					{"@odata.id":"/redfish/v1/Systems/Node0/EthernetInterfaces/HPCNet3"},
+					{"@odata.id":"/redfish/v1/Systems/Node0/EthernetInterfaces/ManagementEthernet"}
+				]
+			}`))
+		case "/redfish/v1/Systems/Node0/EthernetInterfaces/HPCNet2":
+			_, _ = w.Write([]byte(`{
+				"Id":"HPCNet2",
+				"Name":"HPCNet2",
+				"Description":"SS11 200Gb 2P NIC Mezz REV02 (HSN)",
+				"MACAddress":"Not Available",
+				"PermanentMACAddress":""
+			}`))
+		case "/redfish/v1/Systems/Node0/EthernetInterfaces/HPCNet3":
+			_, _ = w.Write([]byte(`{
+				"Id":"HPCNet3",
+				"Name":"HPCNet3",
+				"Description":"SS11 200Gb 2P NIC Mezz REV02 (HSN)",
+				"MACAddress":"Not Available",
+				"PermanentMACAddress":""
+			}`))
+		case "/redfish/v1/Systems/Node0/EthernetInterfaces/ManagementEthernet":
+			w.Write([]byte(`{
+				"Id":"ManagementEthernet",
+				"Name":"Management Ethernet",
+				"Description":"Node Maintenance Network",
+				"MACAddress":"00:40:a6:88:d9:01",
+				"PermanentMACAddress":"00:40:a6:88:d9:01"
+			}`))
+		default:
+			w.Write([]byte(`{}`)) //nolint:errcheck
+		}
+	}))
+	defer ts.Close()
+
+	// Create a client with the test server's URL
+	c := newClient("example.com", "admin", "password", true, 0)
+	c.base = ts.URL + "/redfish/v1"
+
+	// First get the system path
+	sysPath, err := c.firstSystemPath(context.Background())
+	if err != nil {
+		t.Fatalf("firstSystemPath failed: %v", err)
+	}
+
+	// Then get the ethernet interfaces for that system
+	nics, err := c.listEthernetInterfaces(context.Background(), sysPath)
+	if err != nil {
+		t.Fatalf("listEthernetInterfaces failed: %v", err)
+	}
+
+	// Convert to MAC strings, filtering out invalid MACs
+	var macStrings []string
+	for _, nic := range nics {
+		if isValidMAC(nic.MACAddress) {
+			macStrings = append(macStrings, nic.MACAddress)
+		}
+	}
+
+	// Check that we only got the valid MAC (ManagementEthernet)
+	expectedMACs := []string{"00:40:a6:88:d9:01"}
+	if len(macStrings) != len(expectedMACs) {
+		t.Errorf("got %d MACs, want %d", len(macStrings), len(expectedMACs))
+	}
+	for i, want := range expectedMACs {
+		if i >= len(macStrings) {
+			t.Errorf("missing MAC %d: want %q", i, want)
+			continue
+		}
+		if macStrings[i] != want {
+			t.Errorf("MAC %d: got %q, want %q", i, macStrings[i], want)
+		}
+	}
+
+	// Verify all interfaces were queried but only valid MACs returned
+	expectedPaths := []string{
+		"/redfish/v1/Systems",
+		"/redfish/v1/Systems/Node0/EthernetInterfaces",
+		"/redfish/v1/Systems/Node0/EthernetInterfaces/HPCNet2",
+		"/redfish/v1/Systems/Node0/EthernetInterfaces/HPCNet3",
+		"/redfish/v1/Systems/Node0/EthernetInterfaces/ManagementEthernet",
 	}
 	if len(gotPaths) != len(expectedPaths) {
 		t.Errorf("got %d requests, want %d", len(gotPaths), len(expectedPaths))

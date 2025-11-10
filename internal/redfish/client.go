@@ -170,6 +170,32 @@ func isBootable(n rfEthernetInterface) bool {
 	return false
 }
 
+// isValidMAC checks if a MAC address string is valid
+func isValidMAC(mac string) bool {
+	if mac == "" || strings.EqualFold(mac, "Not Available") {
+		return false
+	}
+	// Basic MAC address format validation (handles both : and - separators)
+	// Valid formats: xx:xx:xx:xx:xx:xx or xx-xx-xx-xx-xx-xx
+	parts := strings.FieldsFunc(mac, func(r rune) bool {
+		return r == ':' || r == '-'
+	})
+	if len(parts) != 6 {
+		return false
+	}
+	for _, part := range parts {
+		if len(part) != 2 {
+			return false
+		}
+		for _, c := range part {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // DiscoverBootableMACs returns MAC addresses of bootable NICs for a given BMC.
 func DiscoverBootableMACs(ctx context.Context, host, user, pass string, insecure bool, timeout time.Duration) ([]string, error) {
 	c := newClient(host, user, pass, insecure, timeout)
@@ -181,10 +207,10 @@ func DiscoverBootableMACs(ctx context.Context, host, user, pass string, insecure
 	if err != nil {
 		return nil, err
 	}
-	// collect bootable, fallback to first MAC if none
+	// collect bootable, fallback to first valid MAC if none
 	macs := make([]string, 0, len(nics))
 	for _, nic := range nics {
-		if nic.MACAddress == "" {
+		if !isValidMAC(nic.MACAddress) {
 			continue
 		}
 		if isBootable(nic) {
@@ -193,7 +219,7 @@ func DiscoverBootableMACs(ctx context.Context, host, user, pass string, insecure
 	}
 	if len(macs) == 0 {
 		for _, nic := range nics {
-			if nic.MACAddress != "" {
+			if isValidMAC(nic.MACAddress) {
 				macs = append(macs, strings.ToLower(nic.MACAddress))
 				break
 			}

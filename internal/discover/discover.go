@@ -44,26 +44,24 @@ func UpdateNodes(doc *inventory.FileFormat, subnet string, user, pass string, in
 			fmt.Fprintf(os.Stderr, "WARN: %s: no NICs discovered\n", b.Xname)
 			continue
 		}
-		for idx, mac := range macs {
-			nodeX := xname.BMCXnameToNode(b.Xname)
-			if len(macs) > 1 {
-				nodeX = fmt.Sprintf("%s-pxe%d", nodeX, idx+1)
-			}
 
-			existing := findByXname(doc.Nodes, nodeX)
-			ipStr := ""
-			if existing != nil && net.ParseIP(existing.IP) != nil {
-				ipStr = existing.IP
-				alloc.Reserve(ipStr)
-			} else {
-				var err error
-				ipStr, err = alloc.Next()
-				if err != nil {
-					return nil, fmt.Errorf("ip allocate for %s: %w", nodeX, err)
-				}
+		// Use only the first bootable MAC for PXE booting
+		mac := macs[0]
+		nodeX := xname.BMCXnameToNode(b.Xname)
+
+		existing := findByXname(doc.Nodes, nodeX)
+		ipStr := ""
+		if existing != nil && net.ParseIP(existing.IP) != nil {
+			ipStr = existing.IP
+			alloc.Reserve(ipStr)
+		} else {
+			var err error
+			ipStr, err = alloc.Next()
+			if err != nil {
+				return nil, fmt.Errorf("ip allocate for %s: %w", nodeX, err)
 			}
-			out = append(out, inventory.Entry{Xname: nodeX, MAC: mac, IP: ipStr})
 		}
+		out = append(out, inventory.Entry{Xname: nodeX, MAC: mac, IP: ipStr})
 	}
 	return out, nil
 }
