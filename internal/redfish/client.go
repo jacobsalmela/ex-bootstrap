@@ -135,19 +135,18 @@ func (c *client) firstSystemPath(ctx context.Context) (string, error) {
 	if len(coll.Members) == 0 {
 		return "", errors.New("no systems reported by BMC")
 	}
-	return c.resolvePath(coll.Members[0].OID), nil
+	return coll.Members[0].OID, nil
 }
 
-func (c *client) listEthernetInterfaces(ctx context.Context) ([]rfEthernetInterface, error) {
+func (c *client) listEthernetInterfaces(ctx context.Context, sysPath string) ([]rfEthernetInterface, error) {
 	var coll rfCollection
-	if err := c.get(ctx, "/EthernetInterfaces", &coll); err != nil {
+	if err := c.get(ctx, sysPath+"/EthernetInterfaces", &coll); err != nil {
 		return nil, err
 	}
 	var out []rfEthernetInterface
 	for _, m := range coll.Members {
 		var nic rfEthernetInterface
-		path := c.resolvePath(m.OID)
-		if err := c.get(ctx, path, &nic); err != nil {
+		if err := c.get(ctx, m.OID, &nic); err != nil {
 			return nil, err
 		}
 		out = append(out, nic)
@@ -174,7 +173,11 @@ func isBootable(n rfEthernetInterface) bool {
 // DiscoverBootableMACs returns MAC addresses of bootable NICs for a given BMC.
 func DiscoverBootableMACs(ctx context.Context, host, user, pass string, insecure bool, timeout time.Duration) ([]string, error) {
 	c := newClient(host, user, pass, insecure, timeout)
-	nics, err := c.listEthernetInterfaces(ctx)
+	sysPath, err := c.firstSystemPath(ctx)
+	if err != nil {
+		return nil, err
+	}
+	nics, err := c.listEthernetInterfaces(ctx, sysPath)
 	if err != nil {
 		return nil, err
 	}
@@ -228,9 +231,21 @@ func SetAuthorizedKeys(ctx context.Context, host, user, pass string, insecure bo
 }
 
 func (c *client) resolvePath(path string) string {
-	if strings.HasPrefix(path, c.base) || strings.HasPrefix(path, "http") {
+	// If it's already an absolute URL, return as-is
+	if strings.HasPrefix(path, "http") {
 		return path
 	}
+	// If it already has the base prefix, return as-is
+	if strings.HasPrefix(path, c.base) {
+		return path
+	}
+	// If it starts with /redfish/v1, it's an absolute Redfish path, so just prepend the scheme+host
+	if strings.HasPrefix(path, "/redfish/v1") {
+		// Extract the scheme+host from c.base
+		baseURL := c.base[:strings.Index(c.base, "/redfish/v1")]
+		return baseURL + path
+	}
+	// Otherwise, it's a relative path, so append to base
 	if strings.HasPrefix(path, "/") {
 		return c.base + path
 	}

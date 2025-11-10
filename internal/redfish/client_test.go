@@ -51,9 +51,9 @@ func TestClientURLs(t *testing.T) {
 	pass := "password"
 	insecure := true
 	tests := []struct {
-		name     string
-		call     func(c *client) error
-		wantPath string
+		name      string
+		call      func(c *client) error
+		wantPaths []string
 	}{
 		{
 			name: "GET Systems",
@@ -61,22 +61,25 @@ func TestClientURLs(t *testing.T) {
 				_, err := c.firstSystemPath(context.Background())
 				return err
 			},
-			wantPath: "/redfish/v1/Systems",
+			wantPaths: []string{"/redfish/v1/Systems"},
 		},
 		{
-			name: "GET EthernetInterfaces",
+			name: "GET EthernetInterfaces for System",
 			call: func(c *client) error {
-				_, err := c.listEthernetInterfaces(context.Background())
+				_, err := c.listEthernetInterfaces(context.Background(), "/Systems/1")
 				return err
 			},
-			wantPath: "/redfish/v1/EthernetInterfaces",
+			wantPaths: []string{
+				"/redfish/v1/Systems/1/EthernetInterfaces",
+				"/redfish/v1/Systems/1/EthernetInterfaces/1",
+			},
 		},
 		{
 			name: "POST SimpleUpdate",
 			call: func(c *client) error {
 				return c.post(context.Background(), "/UpdateService/Actions/SimpleUpdate", map[string]string{})
 			},
-			wantPath: "/redfish/v1/UpdateService/Actions/SimpleUpdate",
+			wantPaths: []string{"/redfish/v1/UpdateService/Actions/SimpleUpdate"},
 		},
 	}
 
@@ -90,9 +93,9 @@ func TestClientURLs(t *testing.T) {
 				switch r.URL.Path {
 				case "/redfish/v1/Systems":
 					w.Write([]byte(`{"Members":[{"@odata.id":"/redfish/v1/Systems/1"}]}`)) //nolint:errcheck
-				case "/redfish/v1/EthernetInterfaces":
-					w.Write([]byte(`{"Members":[{"@odata.id":"/redfish/v1/EthernetInterfaces/1"}]}`)) //nolint:errcheck
-				case "/redfish/v1/EthernetInterfaces/1":
+				case "/redfish/v1/Systems/1/EthernetInterfaces":
+					w.Write([]byte(`{"Members":[{"@odata.id":"/redfish/v1/Systems/1/EthernetInterfaces/1"}]}`)) //nolint:errcheck
+				case "/redfish/v1/Systems/1/EthernetInterfaces/1":
 					w.Write([]byte(`{"Id":"1","MACAddress":"aa:bb:cc:dd:ee:ff"}`)) //nolint:errcheck
 				default:
 					w.Write([]byte(`{}`)) //nolint:errcheck
@@ -106,12 +109,18 @@ func TestClientURLs(t *testing.T) {
 			if err := tt.call(c); err != nil {
 				t.Fatalf("call failed: %v", err)
 			}
-			// Check that the first request was to the expected path
-			if len(gotPaths) == 0 {
-				t.Fatal("no requests made")
+			// Check that all expected paths were requested
+			if len(gotPaths) != len(tt.wantPaths) {
+				t.Errorf("got %d requests, want %d", len(gotPaths), len(tt.wantPaths))
 			}
-			if gotPaths[0] != tt.wantPath {
-				t.Errorf("got path %q, want %q", gotPaths[0], tt.wantPath)
+			for i, wantPath := range tt.wantPaths {
+				if i >= len(gotPaths) {
+					t.Errorf("missing request %d: want %q", i, wantPath)
+					continue
+				}
+				if gotPaths[i] != wantPath {
+					t.Errorf("request %d: got path %q, want %q", i, gotPaths[i], wantPath)
+				}
 			}
 		})
 	}
@@ -153,5 +162,101 @@ func TestResolvePath(t *testing.T) {
 				t.Errorf("resolvePath(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDiscoverBootableMACs(t *testing.T) {
+	var gotPaths []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		// Return mock Redfish responses
+		switch r.URL.Path {
+		case "/redfish/v1/Systems":
+			w.Write([]byte(`{"Members":[{"@odata.id":"/redfish/v1/Systems/Self"}]}`)) //nolint:errcheck
+		case "/redfish/v1/Systems/Self/EthernetInterfaces":
+			_, _ = w.Write([]byte(`{
+				"Members":[
+					{"@odata.id":"/redfish/v1/Systems/Self/EthernetInterfaces/1"},
+					{"@odata.id":"/redfish/v1/Systems/Self/EthernetInterfaces/2"}
+				]
+			}`))
+		case "/redfish/v1/Systems/Self/EthernetInterfaces/1":
+			_, _ = w.Write([]byte(`{
+				"Id":"1",
+				"Name":"NIC 1",
+				"MACAddress":"aa:bb:cc:dd:ee:ff",
+				"UefiDevicePath":"PciRoot(0x0)/Pci(0x1C,0x0)/Pci(0x0,0x0)/MAC(AABBCCDDEEFF,0x1)"
+			}`))
+		case "/redfish/v1/Systems/Self/EthernetInterfaces/2":
+			_, _ = w.Write([]byte(`{
+				"Id":"2",
+				"Name":"NIC 2",
+				"MACAddress":"11:22:33:44:55:66",
+				"IPv4Addresses":[{"Address":"10.0.0.2","AddressOrigin":"DHCP"}]
+			}`))
+		default:
+			w.Write([]byte(`{}`)) //nolint:errcheck
+		}
+	}))
+	defer ts.Close()
+
+	// Create a client with the test server's URL
+	c := newClient("example.com", "admin", "password", true, 0)
+	c.base = ts.URL + "/redfish/v1"
+
+	// First get the system path
+	sysPath, err := c.firstSystemPath(context.Background())
+	if err != nil {
+		t.Fatalf("firstSystemPath failed: %v", err)
+	}
+
+	// Then get the ethernet interfaces for that system
+	nics, err := c.listEthernetInterfaces(context.Background(), sysPath)
+	if err != nil {
+		t.Fatalf("listEthernetInterfaces failed: %v", err)
+	}
+
+	// Convert to MAC strings
+	var macStrings []string
+	for _, nic := range nics {
+		if nic.MACAddress != "" {
+			macStrings = append(macStrings, nic.MACAddress)
+		}
+	}
+
+	// Check that we got the expected MACs
+	expectedMACs := []string{"aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66"}
+	if len(macStrings) != len(expectedMACs) {
+		t.Errorf("got %d MACs, want %d", len(macStrings), len(expectedMACs))
+	}
+	for i, want := range expectedMACs {
+		if i >= len(macStrings) {
+			t.Errorf("missing MAC %d: want %q", i, want)
+			continue
+		}
+		if macStrings[i] != want {
+			t.Errorf("MAC %d: got %q, want %q", i, macStrings[i], want)
+		}
+	}
+
+	// Verify the correct Redfish paths were requested
+	expectedPaths := []string{
+		"/redfish/v1/Systems",
+		"/redfish/v1/Systems/Self/EthernetInterfaces",
+		"/redfish/v1/Systems/Self/EthernetInterfaces/1",
+		"/redfish/v1/Systems/Self/EthernetInterfaces/2",
+	}
+	if len(gotPaths) != len(expectedPaths) {
+		t.Errorf("got %d requests, want %d", len(gotPaths), len(expectedPaths))
+	}
+	for i, want := range expectedPaths {
+		if i >= len(gotPaths) {
+			t.Errorf("missing request %d: want %q", i, want)
+			continue
+		}
+		if gotPaths[i] != want {
+			t.Errorf("request %d: got path %q, want %q", i, gotPaths[i], want)
+		}
 	}
 }
