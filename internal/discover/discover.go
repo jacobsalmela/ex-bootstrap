@@ -15,14 +15,34 @@ import (
 
 // UpdateNodes reads existing nodes for reservations, discovers bootable NICs per BMC,
 // allocates IPs, and returns the new nodes list.
-func UpdateNodes(doc *inventory.FileFormat, subnet string, user, pass string, insecure bool, timeout time.Duration) ([]inventory.Entry, error) {
-	alloc, err := netalloc.NewAllocator(subnet)
+func UpdateNodes(doc *inventory.FileFormat, bmcSubnet, nodeSubnet string, user, pass string, insecure bool, timeout time.Duration) ([]inventory.Entry, error) {
+	// Create allocator for node IPs
+	nodeAlloc, err := netalloc.NewAllocator(nodeSubnet)
 	if err != nil {
-		return nil, fmt.Errorf("ipam init: %w", err)
+		return nil, fmt.Errorf("node ipam init: %w", err)
 	}
+
+	// Reserve existing node IPs
 	for _, n := range doc.Nodes {
 		if ip := net.ParseIP(n.IP); ip != nil {
-			alloc.Reserve(ip.String())
+			nodeAlloc.Reserve(ip.String())
+		}
+	}
+
+	// Create BMC allocator if subnet is different, otherwise reuse node allocator
+	var bmcAlloc *netalloc.Allocator
+	if bmcSubnet == nodeSubnet {
+		bmcAlloc = nodeAlloc
+	} else {
+		bmcAlloc, err = netalloc.NewAllocator(bmcSubnet)
+		if err != nil {
+			return nil, fmt.Errorf("bmc ipam init: %w", err)
+		}
+		// Reserve existing BMC IPs
+		for _, b := range doc.BMCs {
+			if ip := net.ParseIP(b.IP); ip != nil {
+				bmcAlloc.Reserve(ip.String())
+			}
 		}
 	}
 
@@ -64,10 +84,10 @@ func UpdateNodes(doc *inventory.FileFormat, subnet string, user, pass string, in
 			ipStr := ""
 			if existing != nil && net.ParseIP(existing.IP) != nil {
 				ipStr = existing.IP
-				alloc.Reserve(ipStr)
+				nodeAlloc.Reserve(ipStr)
 			} else {
 				var err error
-				ipStr, err = alloc.Next()
+				ipStr, err = nodeAlloc.Next()
 				if err != nil {
 					return nil, fmt.Errorf("ip allocate for %s: %w", nodeX, err)
 				}

@@ -15,20 +15,29 @@ import (
 )
 
 var (
-	discFile      string
-	discSubnet    string
-	discInsecure  bool
-	discTimeout   time.Duration
-	discSSHPubKey string
-	discDryRun    bool
+	discFile       string
+	discBMCSubnet  string
+	discNodeSubnet string
+	discInsecure   bool
+	discTimeout    time.Duration
+	discSSHPubKey  string
+	discDryRun     bool
 )
 
 var discoverCmd = &cobra.Command{
 	Use:   "discover",
 	Short: "Discover bootable node NICs via Redfish and update nodes[]",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if discSubnet == "" {
-			return fmt.Errorf("--subnet is required")
+		// Validate subnet flags - at least one must be provided
+		if discBMCSubnet == "" && discNodeSubnet == "" {
+			return fmt.Errorf("at least one of --bmc-subnet or --node-subnet is required")
+		}
+		// If only one subnet is provided, use it for both
+		if discBMCSubnet == "" {
+			discBMCSubnet = discNodeSubnet
+		}
+		if discNodeSubnet == "" {
+			discNodeSubnet = discBMCSubnet
 		}
 		user := os.Getenv("REDFISH_USER")
 		pass := os.Getenv("REDFISH_PASSWORD")
@@ -59,7 +68,11 @@ var discoverCmd = &cobra.Command{
 				hosts = append(hosts, host)
 			}
 			fmt.Printf("[dry-run] would contact %d BMC(s): %v\n", len(hosts), hosts)
-			fmt.Printf("[dry-run] would allocate node IPs from subnet %s and write back to %s\n", discSubnet, discFile)
+			if discBMCSubnet == discNodeSubnet {
+				fmt.Printf("[dry-run] would allocate BMC and node IPs from subnet %s and write back to %s\n", discNodeSubnet, discFile)
+			} else {
+				fmt.Printf("[dry-run] would allocate BMC IPs from subnet %s and node IPs from subnet %s, writing to %s\n", discBMCSubnet, discNodeSubnet, discFile)
+			}
 			if discSSHPubKey != "" {
 				fmt.Printf("[dry-run] would set SSH authorized keys on each BMC from %s\n", discSSHPubKey)
 			}
@@ -90,7 +103,7 @@ var discoverCmd = &cobra.Command{
 			}
 		}
 
-		nodes, err := discover.UpdateNodes(&doc, discSubnet, user, pass, discInsecure, discTimeout)
+		nodes, err := discover.UpdateNodes(&doc, discBMCSubnet, discNodeSubnet, user, pass, discInsecure, discTimeout)
 		if err != nil {
 			return err
 		}
@@ -110,7 +123,8 @@ var discoverCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(discoverCmd)
 	discoverCmd.Flags().StringVarP(&discFile, "file", "f", "inventory.yaml", "YAML file containing bmcs[] and nodes[] (nodes will be overwritten)")
-	discoverCmd.Flags().StringVar(&discSubnet, "subnet", "", "CIDR to allocate from, e.g. 10.42.0.0/24")
+	discoverCmd.Flags().StringVar(&discBMCSubnet, "bmc-subnet", "", "CIDR for BMC IPs, e.g. 192.168.100.0/24 (if not specified, uses --node-subnet)")
+	discoverCmd.Flags().StringVar(&discNodeSubnet, "node-subnet", "", "CIDR for node IPs, e.g. 10.42.0.0/24 (if not specified, uses --bmc-subnet)")
 	discoverCmd.Flags().BoolVar(&discInsecure, "insecure", true, "allow insecure TLS to BMCs")
 	discoverCmd.Flags().DurationVar(&discTimeout, "timeout", 12*time.Second, "per-BMC discovery timeout")
 	discoverCmd.Flags().StringVar(&discSSHPubKey, "ssh-pubkey", "", "Path to an SSH public key to set as AuthorizedKeys on each BMC (optional)")

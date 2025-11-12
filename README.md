@@ -68,14 +68,28 @@ Required env vars:
 - `REDFISH_USER` — Redfish username
 - `REDFISH_PASSWORD` — Redfish password
 
-Example:
+Example (same subnet for BMCs and nodes):
 
 ```bash
 export REDFISH_USER=admin
 export REDFISH_PASSWORD=secret
 ./ochami_bootstrap discover \
   --file examples/inventory.yaml \
-  --subnet 10.42.0.0/24 \
+  --node-subnet 10.42.0.0/24 \
+  --timeout 12s \
+  --insecure \
+  --ssh-pubkey ~/.ssh/id_rsa.pub   # optional: set AuthorizedKeys on each BMC
+```
+
+Example (separate subnets for BMCs and nodes):
+
+```bash
+export REDFISH_USER=admin
+export REDFISH_PASSWORD=secret
+./ochami_bootstrap discover \
+  --file examples/inventory.yaml \
+  --bmc-subnet 192.168.100.0/24 \
+  --node-subnet 10.42.0.0/24 \
   --timeout 12s \
   --insecure \
   --ssh-pubkey ~/.ssh/id_rsa.pub   # optional: set AuthorizedKeys on each BMC
@@ -84,6 +98,7 @@ export REDFISH_PASSWORD=secret
 Notes:
 - The program makes simple heuristic decisions about which NIC is bootable (UEFI path hints, DHCP addresses, or a MAC on an enabled interface).
 - IP allocation is done with `github.com/metal-stack/go-ipam`. The code reserves `.1` (first host) as a gateway and avoids network/broadcast implicitly.
+- You can specify `--bmc-subnet` and `--node-subnet` separately. If only one is provided, it will be used for both BMCs and nodes.
 - If `--ssh-pubkey` is provided, the tool attempts a Redfish PATCH to `/redfish/v1/Managers/BMC/NetworkProtocol` with an OEM payload setting `SSHAdmin.AuthorizedKeys` to the contents of the file.
 
 ### 3) Trigger firmware updates
@@ -133,7 +148,7 @@ Notes:
 Example:
 
 ```bash
-./ochami_bootstrap --debug discover --file examples/inventory.yaml --subnet 10.42.0.0/24 --dry-run
+./ochami_bootstrap --debug discover --file examples/inventory.yaml --node-subnet 10.42.0.0/24 --dry-run
 ./ochami_bootstrap --debug firmware --file examples/inventory.yaml --type cc --image-uri http://10.0.0.1/bmc.bin --dry-run
 ```
 
