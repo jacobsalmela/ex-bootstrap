@@ -138,6 +138,21 @@ func (c *client) firstSystemPath(ctx context.Context) (string, error) {
 	return coll.Members[0].OID, nil
 }
 
+func (c *client) listSystemPaths(ctx context.Context) ([]string, error) {
+	var coll rfCollection
+	if err := c.get(ctx, "/Systems", &coll); err != nil {
+		return nil, err
+	}
+	if len(coll.Members) == 0 {
+		return nil, errors.New("no systems reported by BMC")
+	}
+	paths := make([]string, len(coll.Members))
+	for i, member := range coll.Members {
+		paths[i] = member.OID
+	}
+	return paths, nil
+}
+
 func (c *client) listEthernetInterfaces(ctx context.Context, sysPath string) ([]rfEthernetInterface, error) {
 	var coll rfCollection
 	if err := c.get(ctx, sysPath+"/EthernetInterfaces", &coll); err != nil {
@@ -196,7 +211,60 @@ func isValidMAC(mac string) bool {
 	return true
 }
 
-// DiscoverBootableMACs returns MAC addresses of bootable NICs for a given BMC.
+// SystemMACs represents the bootable MAC addresses for a single system.
+type SystemMACs struct {
+	SystemPath string
+	MACs       []string
+}
+
+// DiscoverAllBootableMACs returns bootable MAC addresses for all systems on a BMC.
+// Returns a slice of SystemMACs, one entry per system (e.g., Node0, Node1).
+func DiscoverAllBootableMACs(ctx context.Context, host, user, pass string, insecure bool, timeout time.Duration) ([]SystemMACs, error) {
+	c := newClient(host, user, pass, insecure, timeout)
+	sysPaths, err := c.listSystemPaths(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]SystemMACs, 0, len(sysPaths))
+	for _, sysPath := range sysPaths {
+		nics, err := c.listEthernetInterfaces(ctx, sysPath)
+		if err != nil {
+			// Skip this system but continue with others
+			continue
+		}
+
+		// collect bootable MACs, fallback to first valid MAC if none
+		macs := make([]string, 0, len(nics))
+		for _, nic := range nics {
+			if !isValidMAC(nic.MACAddress) {
+				continue
+			}
+			if isBootable(nic) {
+				macs = append(macs, strings.ToLower(nic.MACAddress))
+			}
+		}
+		if len(macs) == 0 {
+			for _, nic := range nics {
+				if isValidMAC(nic.MACAddress) {
+					macs = append(macs, strings.ToLower(nic.MACAddress))
+					break
+				}
+			}
+		}
+
+		if len(macs) > 0 {
+			result = append(result, SystemMACs{
+				SystemPath: sysPath,
+				MACs:       macs,
+			})
+		}
+	}
+	return result, nil
+}
+
+// DiscoverBootableMACs returns MAC addresses of bootable NICs for the first system on a BMC.
+// Deprecated: Use DiscoverAllBootableMACs to discover all systems on a BMC.
 func DiscoverBootableMACs(ctx context.Context, host, user, pass string, insecure bool, timeout time.Duration) ([]string, error) {
 	c := newClient(host, user, pass, insecure, timeout)
 	sysPath, err := c.firstSystemPath(ctx)

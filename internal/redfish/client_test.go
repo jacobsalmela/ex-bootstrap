@@ -324,6 +324,106 @@ func TestDiscoverBootableMACs(t *testing.T) {
 	}
 }
 
+func TestDiscoverAllBootableMACs_MultipleSystems(t *testing.T) {
+	var gotPaths []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		// Simulate BMC with multiple systems (Node0, Node1)
+		switch r.URL.Path {
+		case "/redfish/v1/Systems":
+			w.Write([]byte(`{
+				"Members":[
+					{"@odata.id":"/redfish/v1/Systems/Node0"},
+					{"@odata.id":"/redfish/v1/Systems/Node1"}
+				]
+			}`)) //nolint:errcheck
+		case "/redfish/v1/Systems/Node0/EthernetInterfaces":
+			w.Write([]byte(`{
+				"Members":[
+					{"@odata.id":"/redfish/v1/Systems/Node0/EthernetInterfaces/ManagementEthernet"}
+				]
+			}`)) //nolint:errcheck
+		case "/redfish/v1/Systems/Node0/EthernetInterfaces/ManagementEthernet":
+			w.Write([]byte(`{
+				"Id":"ManagementEthernet",
+				"MACAddress":"aa:bb:cc:dd:ee:01"
+			}`)) //nolint:errcheck
+		case "/redfish/v1/Systems/Node1/EthernetInterfaces":
+			w.Write([]byte(`{
+				"Members":[
+					{"@odata.id":"/redfish/v1/Systems/Node1/EthernetInterfaces/ManagementEthernet"}
+				]
+			}`)) //nolint:errcheck
+		case "/redfish/v1/Systems/Node1/EthernetInterfaces/ManagementEthernet":
+			w.Write([]byte(`{
+				"Id":"ManagementEthernet",
+				"MACAddress":"aa:bb:cc:dd:ee:02"
+			}`)) //nolint:errcheck
+		default:
+			w.Write([]byte(`{}`)) //nolint:errcheck
+		}
+	}))
+	defer ts.Close()
+
+	// Create a client with the test server's URL
+	c := newClient("example.com", "admin", "password", true, 0)
+	c.base = ts.URL + "/redfish/v1"
+
+	// Get all systems
+	sysPaths, err := c.listSystemPaths(context.Background())
+	if err != nil {
+		t.Fatalf("listSystemPaths failed: %v", err)
+	}
+
+	systemMACs := make([]SystemMACs, 0, len(sysPaths))
+	for _, sysPath := range sysPaths {
+		nics, err := c.listEthernetInterfaces(context.Background(), sysPath)
+		if err != nil {
+			t.Fatalf("listEthernetInterfaces failed: %v", err)
+		}
+
+		macs := make([]string, 0, len(nics))
+		for _, nic := range nics {
+			if isValidMAC(nic.MACAddress) {
+				macs = append(macs, nic.MACAddress)
+			}
+		}
+
+		if len(macs) > 0 {
+			systemMACs = append(systemMACs, SystemMACs{
+				SystemPath: sysPath,
+				MACs:       macs,
+			})
+		}
+	}
+
+	// Check that we got 2 systems
+	if len(systemMACs) != 2 {
+		t.Fatalf("got %d systems, want 2", len(systemMACs))
+	}
+
+	// Check Node0
+	if systemMACs[0].SystemPath != "/redfish/v1/Systems/Node0" {
+		t.Errorf("got system path %q, want %q", systemMACs[0].SystemPath, "/redfish/v1/Systems/Node0")
+	}
+	if len(systemMACs[0].MACs) != 1 {
+		t.Errorf("got %d MACs for Node0, want 1", len(systemMACs[0].MACs))
+	} else if systemMACs[0].MACs[0] != "aa:bb:cc:dd:ee:01" {
+		t.Errorf("got MAC %q for Node0, want %q", systemMACs[0].MACs[0], "aa:bb:cc:dd:ee:01")
+	}
+
+	// Check Node1
+	if systemMACs[1].SystemPath != "/redfish/v1/Systems/Node1" {
+		t.Errorf("got system path %q, want %q", systemMACs[1].SystemPath, "/redfish/v1/Systems/Node1")
+	}
+	if len(systemMACs[1].MACs) != 1 {
+		t.Errorf("got %d MACs for Node1, want 1", len(systemMACs[1].MACs))
+	} else if systemMACs[1].MACs[0] != "aa:bb:cc:dd:ee:02" {
+		t.Errorf("got MAC %q for Node1, want %q", systemMACs[1].MACs[0], "aa:bb:cc:dd:ee:02")
+	}
+}
+
 func TestDiscoverBootableMACs_WithInvalidMACs(t *testing.T) {
 	var gotPaths []string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
