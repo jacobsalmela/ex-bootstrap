@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestIsBootable_UefiPXE(t *testing.T) {
@@ -530,4 +531,55 @@ func TestDiscoverBootableMACs_WithInvalidMACs(t *testing.T) {
 			t.Errorf("request %d: got path %q, want %q", i, gotPaths[i], want)
 		}
 	}
+}
+
+func TestSimpleUpdate_WithStatusConditions(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/redfish/v1/UpdateService/Actions/SimpleUpdate" {
+			// Accept the update request
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if r.Method == "GET" && r.URL.Path == "/redfish/v1/UpdateService/FirmwareInventory/BMC" {
+			// Return status with a warning condition
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{
+				"@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/BMC",
+				"Status": {
+					"Health": "Warning",
+					"State": "Enabled",
+					"Conditions": [{
+						"Message": "Firmware package specified in the ImageURI during a SimpleUpdate failed to download. Failed to connect to host.",
+						"MessageId": "HPEFirmwareUpdate.1.0.DownloadFailed",
+						"Severity": "Warning",
+						"Timestamp": "2000-01-08T05:18:43+00:00"
+					}]
+				}
+			}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	host := server.URL[len("https://"):]
+	err := SimpleUpdate(ctx, host, "user", "pass", true, 10*time.Second, "http://example.com/firmware.bin",
+		[]string{"/redfish/v1/UpdateService/FirmwareInventory/BMC"}, "HTTP")
+
+	if err == nil {
+		t.Fatal("expected error due to status condition, got nil")
+	}
+	if !contains(err.Error(), "failed to download") && !contains(err.Error(), "Failed to connect") {
+		t.Errorf("expected error message about download failure, got: %v", err)
+	}
+}
+
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

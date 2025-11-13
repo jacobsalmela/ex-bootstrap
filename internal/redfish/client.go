@@ -52,6 +52,20 @@ type rfEthernetInterface struct {
 	} `json:"IPv4Addresses"`
 }
 
+type rfFirmwareInventory struct {
+	Status struct {
+		Health     string `json:"Health"`
+		State      string `json:"State"`
+		Conditions []struct {
+			Message     string   `json:"Message"`
+			MessageArgs []string `json:"MessageArgs"`
+			MessageId   string   `json:"MessageId"`
+			Severity    string   `json:"Severity"`
+			Timestamp   string   `json:"Timestamp"`
+		} `json:"Conditions"`
+	} `json:"Status"`
+}
+
 func (c *client) get(ctx context.Context, path string, v any) error {
 	path = c.resolvePath(path)
 	diag.Logf("GET %s", path)
@@ -307,7 +321,35 @@ func SimpleUpdate(ctx context.Context, host, user, pass string, insecure bool, t
 		"Targets":          targets,
 	}
 	// Vendor path per provided examples
-	return c.post(ctx, "/UpdateService/Actions/SimpleUpdate", payload)
+	if err := c.post(ctx, "/UpdateService/Actions/SimpleUpdate", payload); err != nil {
+		return err
+	}
+
+	// Check firmware inventory status for any conditions/errors
+	// Wait a moment for the status to update
+	time.Sleep(2 * time.Second)
+
+	var statusErrors []string
+	for _, target := range targets {
+		var fw rfFirmwareInventory
+		if err := c.get(ctx, target, &fw); err != nil {
+			// If we can't get status, just skip it (don't fail the whole operation)
+			continue
+		}
+
+		// Check for warning or critical conditions
+		for _, cond := range fw.Status.Conditions {
+			if cond.Severity == "Warning" || cond.Severity == "Critical" {
+				statusErrors = append(statusErrors, fmt.Sprintf("[%s] %s: %s", target, cond.Severity, cond.Message))
+			}
+		}
+	}
+
+	if len(statusErrors) > 0 {
+		return fmt.Errorf("firmware update completed with warnings/errors:\n%s", strings.Join(statusErrors, "\n"))
+	}
+
+	return nil
 }
 
 // SetAuthorizedKeys configures the SSH authorized keys on a BMC.
