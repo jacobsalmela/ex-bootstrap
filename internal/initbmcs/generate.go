@@ -13,7 +13,7 @@ import (
 	"bootstrap/internal/netalloc"
 )
 
-func getBmcID(n int) int { return (n + 1) / 2 }
+func getBmcID(n int) int { return (n + 1) / 2 } //nolint:unused
 func getSlot(n int) int  { return ((n - 1) / 4) % 8 }
 func getBlade(n int) int { return ((n - 1) / 2) % 2 }
 
