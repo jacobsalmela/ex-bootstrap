@@ -72,6 +72,56 @@ type rfFirmwareInventory struct {
 	} `json:"Status"`
 }
 
+type rfUpdateService struct {
+	Status struct {
+		Health     string `json:"Health"`
+		State      string `json:"State"`
+		Conditions []struct {
+			Message   string `json:"Message"`
+			MessageID string `json:"MessageId"`
+			Severity  string `json:"Severity"`
+			Timestamp string `json:"Timestamp"`
+		} `json:"Conditions"`
+	} `json:"Status"`
+}
+
+// UpdateCondition represents a simplified condition from UpdateService.Status
+type UpdateCondition struct {
+	Message   string
+	Severity  string
+	Timestamp string
+	MessageID string
+}
+
+// UpdateServiceStatus is an exported, simplified representation of UpdateService.Status
+type UpdateServiceStatus struct {
+	Health     string
+	State      string
+	Conditions []UpdateCondition
+}
+
+// GetUpdateServiceStatus fetches the UpdateService status for a BMC.
+func GetUpdateServiceStatus(ctx context.Context, host, user, pass string, insecure bool, timeout time.Duration) (UpdateServiceStatus, error) {
+	c := newClient(host, user, pass, insecure, timeout)
+	var rf rfUpdateService
+	if err := c.get(ctx, "/UpdateService", &rf); err != nil {
+		return UpdateServiceStatus{}, err
+	}
+	out := UpdateServiceStatus{
+		Health: rf.Status.Health,
+		State:  rf.Status.State,
+	}
+	for _, cnd := range rf.Status.Conditions {
+		out.Conditions = append(out.Conditions, UpdateCondition{
+			Message:   cnd.Message,
+			Severity:  cnd.Severity,
+			Timestamp: cnd.Timestamp,
+			MessageID: cnd.MessageID,
+		})
+	}
+	return out, nil
+}
+
 // FirmwareCondition represents a simplified status condition from firmware inventory.
 type FirmwareCondition struct {
 	Message   string

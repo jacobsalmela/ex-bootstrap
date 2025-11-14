@@ -1,11 +1,15 @@
 // SPDX-FileCopyrightText: 2025 OpenCHAMI Contributors
 //
 // SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2025 OpenCHAMI Contributors
+//
+// SPDX-License-Identifier: MIT
 
 package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -24,6 +28,7 @@ import (
 var (
 	// reuse firmware flags (made persistent)
 	fwStatusInterval time.Duration
+	fwFormat         string
 )
 
 var firmwareStatusCmd = &cobra.Command{
@@ -91,6 +96,16 @@ var firmwareStatusCmd = &cobra.Command{
 		inProgress := int32(0)
 		errorsList := map[string]string{}
 
+		// Collect per-host summaries for JSON output
+		type hostSummary struct {
+			Host             string `json:"host"`
+			ObservedVersion  string `json:"observed_version"`
+			RequestedVersion string `json:"requested_version,omitempty"`
+			Status           string `json:"status"` // one of: in-progress, error, idle
+			Error            string `json:"error,omitempty"`
+		}
+		var hostSummaries []hostSummary
+
 		sem := make(chan struct{}, max(1, fwBatchSize))
 		var wg sync.WaitGroup
 		for _, host := range hosts {
@@ -108,16 +123,46 @@ var firmwareStatusCmd = &cobra.Command{
 					defer cancel()
 				}
 
-				// Query first target (for summary)
-				var ver string
+				// Check UpdateService first (preferred source for overall update activity)
+				var perr string
 				var anyInProgress bool
+				us, err := redfish.GetUpdateServiceStatus(ctx, h, user, pass, fwInsecure, fwTimeout)
+				if err == nil {
+					health := strings.ToLower(us.Health)
+					state := strings.ToLower(us.State)
+					if health != "ok" {
+						// collect condition messages as errors
+						for _, c := range us.Conditions {
+							if c.MessageID != "" {
+								if perr == "" {
+									perr = fmt.Sprintf("%s (%s)", c.MessageID, c.Message)
+								} else {
+									perr = perr + "; " + fmt.Sprintf("%s (%s)", c.MessageID, c.Message)
+								}
+							} else {
+								if perr == "" {
+									perr = c.Message
+								} else {
+									perr = perr + "; " + c.Message
+								}
+							}
+						}
+					} else if state == "updating" {
+						anyInProgress = true
+					}
+				}
+
+				// Query targets and build per-host summary
+				var ver string
 				for _, target := range targets {
 					inv, err := redfish.GetFirmwareInventory(ctx, h, user, pass, fwInsecure, fwTimeout, target)
 					if err != nil {
-						// record error but continue
-						mu.Lock()
-						errorsList[h] = err.Error()
-						mu.Unlock()
+						// record error but continue querying other targets
+						if perr == "" {
+							perr = err.Error()
+						} else {
+							perr = perr + "; " + err.Error()
+						}
 						continue
 					}
 					if ver == "" {
@@ -131,23 +176,24 @@ var firmwareStatusCmd = &cobra.Command{
 						m := strings.ToLower(c.Message)
 						// Treat explicit failures as errors (do not mark as in-progress)
 						if c.Severity == "Critical" || strings.Contains(m, "failed") || strings.Contains(m, "error") {
-							mu.Lock()
-							prev := errorsList[h]
-							// include MessageID for easier diagnosis when available
-							msg := c.Message
+							// include MessageID when available
 							if c.MessageID != "" {
-								msg = fmt.Sprintf("%s (%s)", c.MessageID, c.Message)
-							}
-							if prev == "" {
-								errorsList[h] = msg
+								if perr == "" {
+									perr = fmt.Sprintf("%s (%s)", c.MessageID, c.Message)
+								} else {
+									perr = perr + "; " + fmt.Sprintf("%s (%s)", c.MessageID, c.Message)
+								}
 							} else {
-								errorsList[h] = prev + "; " + msg
+								if perr == "" {
+									perr = c.Message
+								} else {
+									perr = perr + "; " + c.Message
+								}
 							}
-							mu.Unlock()
 							continue
 						}
 
-						// Lightweight progress detection: look for words that indicate work is ongoing.
+						// Lightweight progress detection
 						if strings.Contains(m, "in progress") || strings.Contains(m, "install") || strings.Contains(m, "installing") || strings.Contains(m, "running") || strings.Contains(m, "downloading") || strings.Contains(m, "download in progress") {
 							anyInProgress = true
 						}
@@ -158,18 +204,46 @@ var firmwareStatusCmd = &cobra.Command{
 					ver = "(unknown)"
 				}
 
+				// Build status
+				status := "idle"
+				if perr != "" {
+					status = "error"
+				} else if anyInProgress {
+					status = "in-progress"
+				}
+
+				// Update aggregates and per-host list
 				mu.Lock()
 				versionCounts[ver]++
-				mu.Unlock()
-
-				if anyInProgress {
+				if perr != "" {
+					errorsList[h] = perr
+				}
+				if status == "in-progress" {
 					atomic.AddInt32(&inProgress, 1)
 				}
+				hostSummaries = append(hostSummaries, hostSummary{
+					Host:             h,
+					ObservedVersion:  ver,
+					RequestedVersion: fwExpectedVersion,
+					Status:           status,
+					Error:            perr,
+				})
+				mu.Unlock()
 			}()
 		}
 		wg.Wait()
 
-		// Print summary
+		// JSON format option
+		if strings.EqualFold(fwFormat, "json") {
+			out, err := json.MarshalIndent(hostSummaries, "", "  ")
+			if err != nil {
+				return err
+			}
+			fmt.Println(string(out))
+			return nil
+		}
+
+		// Print human-readable summary
 		fmt.Println("Firmware status summary:")
 		fmt.Printf("  Total hosts: %d\n", len(hosts))
 		fmt.Printf("  In-progress updates: %d\n", atomic.LoadInt32(&inProgress))
@@ -191,4 +265,5 @@ var firmwareStatusCmd = &cobra.Command{
 func init() {
 	firmwareCmd.AddCommand(firmwareStatusCmd)
 	firmwareStatusCmd.Flags().DurationVar(&fwStatusInterval, "interval", 5*time.Second, "poll interval (not used in single-run summary, reserved for future watch command)")
+	firmwareStatusCmd.Flags().StringVar(&fwFormat, "format", "", "output format: json")
 }
