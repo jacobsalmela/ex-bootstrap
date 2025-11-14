@@ -122,6 +122,53 @@ func GetUpdateServiceStatus(ctx context.Context, host, user, pass string, insecu
 	return out, nil
 }
 
+type rfTaskCollection struct {
+	Members []struct {
+		OID string `json:"@odata.id"`
+	} `json:"Members"`
+}
+
+type rfTask struct {
+	ID        string `json:"Id"`
+	Name      string `json:"Name"`
+	TaskState string `json:"TaskState"`
+	Message   string `json:"Message"`
+}
+
+// GetActiveUpdateTasks inspects TaskService tasks and returns a list of task IDs that appear to
+// be running firmware/update jobs. This is a best-effort heuristic that looks for running
+// TaskState values and checks Name/Message for update/firmware keywords.
+func GetActiveUpdateTasks(ctx context.Context, host, user, pass string, insecure bool, timeout time.Duration) ([]string, error) {
+	c := newClient(host, user, pass, insecure, timeout)
+	var coll rfTaskCollection
+	if err := c.get(ctx, "/TaskService/Tasks", &coll); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, m := range coll.Members {
+		var t rfTask
+		if err := c.get(ctx, m.OID, &t); err != nil {
+			// skip tasks we can't fetch
+			continue
+		}
+		ts := strings.ToLower(t.TaskState)
+		name := strings.ToLower(t.Name)
+		msg := strings.ToLower(t.Message)
+		if ts == "running" || ts == "starting" || ts == "inprogress" || ts == "queued" {
+			// If it looks like an update-related task, include it
+			if strings.Contains(name, "update") || strings.Contains(name, "firmware") || strings.Contains(msg, "update") || strings.Contains(msg, "firmware") {
+				out = append(out, t.ID)
+				continue
+			}
+			// If task state indicates running and name/message are empty-ish, include conservatively
+			if name == "" && msg == "" {
+				out = append(out, t.ID)
+			}
+		}
+	}
+	return out, nil
+}
+
 // FirmwareCondition represents a simplified status condition from firmware inventory.
 type FirmwareCondition struct {
 	Message   string
@@ -134,6 +181,7 @@ type FirmwareCondition struct {
 type FirmwareInventory struct {
 	Version    string
 	State      string
+	Health     string
 	Conditions []FirmwareCondition
 }
 
@@ -147,6 +195,7 @@ func GetFirmwareInventory(ctx context.Context, host, user, pass string, insecure
 	out := FirmwareInventory{
 		Version: rf.Version,
 		State:   rf.Status.State,
+		Health:  rf.Status.Health,
 	}
 	for _, cond := range rf.Status.Conditions {
 		out.Conditions = append(out.Conditions, FirmwareCondition{
