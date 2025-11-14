@@ -33,6 +33,9 @@ var discoverCmd = &cobra.Command{
 	Use:   "discover",
 	Short: "Discover bootable node NICs via Redfish and update nodes[]",
 	RunE: func(cmd *cobra.Command, args []string) error { //nolint:revive
+		if discFile == "" {
+			return fmt.Errorf("--file is required")
+		}
 		// Validate subnet flags - at least one must be provided
 		if discBMCSubnet == "" && discNodeSubnet == "" {
 			return fmt.Errorf("at least one of --bmc-subnet or --node-subnet is required")
@@ -127,7 +130,7 @@ var discoverCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(discoverCmd)
-	discoverCmd.Flags().StringVarP(&discFile, "file", "f", "inventory.yaml", "YAML file containing bmcs[] and nodes[] (nodes will be overwritten)")
+	discoverCmd.Flags().StringVarP(&discFile, "file", "f", "", "YAML file containing bmcs[] and nodes[] (nodes will be overwritten)")
 	discoverCmd.Flags().StringVar(&discBMCSubnet, "bmc-subnet", "", "CIDR for BMC IPs, e.g. 192.168.100.0/24 (if not specified, uses --node-subnet)")
 	discoverCmd.Flags().StringVar(&discNodeSubnet, "node-subnet", "", "CIDR for node IPs, e.g. 10.42.0.0/24 (if not specified, uses --bmc-subnet)")
 	discoverCmd.Flags().BoolVar(&discInsecure, "insecure", true, "allow insecure TLS to BMCs")

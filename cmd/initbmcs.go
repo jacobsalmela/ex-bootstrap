@@ -28,6 +28,9 @@ var initBmcsCmd = &cobra.Command{
 	Use:   "init-bmcs",
 	Short: "Generate initial inventory with BMC entries",
 	RunE: func(cmd *cobra.Command, args []string) error { //nolint:revive
+		if initFile == "" {
+			return fmt.Errorf("--file is required")
+		}
 		if initBMCSubnet == "" {
 			return fmt.Errorf("--bmc-subnet is required")
 		}
@@ -54,7 +57,7 @@ var initBmcsCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(initBmcsCmd)
-	initBmcsCmd.Flags().StringVarP(&initFile, "file", "f", "inventory.yaml", "Output YAML file containing bmcs[] and nodes[]")
+	initBmcsCmd.Flags().StringVarP(&initFile, "file", "f", "", "Output YAML file containing bmcs[] and nodes[]")
 	initBmcsCmd.Flags().StringVar(&initChassis, "chassis", "x9000c1=02:23:28:01,x9000c3=02:23:28:03", "comma-separated chassis=macprefix list")
 	initBmcsCmd.Flags().StringVar(&initBMCSubnet, "bmc-subnet", "192.168.100.0/24", "BMC subnet in CIDR notation, e.g. 192.168.100.0/24")
 	initBmcsCmd.Flags().IntVar(&initNodesPerChas, "nodes-per-chassis", 32, "number of nodes per chassis")

@@ -56,6 +56,9 @@ var firmwareCmd = &cobra.Command{
 	Use:   "firmware",
 	Short: "Update firmware via Redfish SimpleUpdate",
 	RunE: func(cmd *cobra.Command, args []string) error { //nolint:revive
+		if fwFile == "" && fwHostsCSV == "" {
+			return errors.New("at least one of --file or --hosts is required")
+		}
 		if fwImageURI == "" {
 			return errors.New("--image-uri is required")
 		}
@@ -208,7 +211,7 @@ var firmwareCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(firmwareCmd)
 	// Make flags persistent so subcommands (like `firmware status`) inherit them
-	firmwareCmd.PersistentFlags().StringVarP(&fwFile, "file", "f", "inventory.yaml", "Inventory file to read bmcs[] from when --hosts is not provided")
+	firmwareCmd.PersistentFlags().StringVarP(&fwFile, "file", "f", "", "Inventory file to read bmcs[] from when --hosts is not provided")
 	firmwareCmd.PersistentFlags().StringVar(&fwHostsCSV, "hosts", "", "Comma-separated list of BMC hosts to target (overrides --file)")
 	firmwareCmd.PersistentFlags().StringVar(&fwType, "type", "", "Firmware type preset: cc|nc|bios (ignored if --targets provided)")
 	firmwareCmd.PersistentFlags().StringVar(&fwImageURI, "image-uri", "", "Firmware image URI accessible by BMC (required)")
